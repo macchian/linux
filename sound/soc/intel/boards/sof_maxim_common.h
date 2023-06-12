@@ -12,33 +12,35 @@
 
 #include <sound/soc.h>
 
-#define MAX_98373_CODEC_DAI	"max98373-aif1"
 #define MAX_98373_DEV0_NAME	"i2c-MX98373:00"
 #define MAX_98373_DEV1_NAME	"i2c-MX98373:01"
 
-extern struct snd_soc_dai_link_component max_98373_components[2];
-extern struct snd_soc_ops max_98373_ops;
-extern const struct snd_soc_dapm_route max_98373_dapm_routes[];
+extern const struct snd_kcontrol_new maxim_kcontrols[2];
+extern const struct snd_soc_dapm_widget maxim_dapm_widgets[2];
+extern const struct snd_soc_dapm_route maxim_dapm_routes[2];
 
-int max_98373_spk_codec_init(struct snd_soc_pcm_runtime *rtd);
-void max_98373_set_codec_conf(struct snd_soc_card *card);
-int max_98373_trigger(struct snd_pcm_substream *substream, int cmd);
+void max_98373_dai_link(struct snd_soc_dai_link *link);
+void sof_max98373_codec_conf(struct snd_soc_card *card);
 
 /*
  * Maxim MAX98390
  */
-#define MAX_98390_CODEC_DAI     "max98390-aif1"
 #define MAX_98390_DEV0_NAME     "i2c-MX98390:00"
 #define MAX_98390_DEV1_NAME     "i2c-MX98390:01"
 #define MAX_98390_DEV2_NAME     "i2c-MX98390:02"
 #define MAX_98390_DEV3_NAME     "i2c-MX98390:03"
 
-extern struct snd_soc_dai_link_component max_98390_components[2];
-extern struct snd_soc_dai_link_component max_98390_4spk_components[4];
-extern const struct snd_soc_ops max_98390_ops;
+void max_98390_dai_link(struct snd_soc_dai_link *link);
+void sof_max98390_codec_conf(struct snd_soc_card *card);
 
-void max_98390_set_codec_conf(struct snd_soc_card *card, int ch);
-int max_98390_spk_codec_init(struct snd_soc_pcm_runtime *rtd);
+/*
+ * Maxim MAX98396
+ */
+#define MAX_98396_DEV0_NAME     "i2c-ADS8396-00"
+#define MAX_98396_DEV1_NAME     "i2c-ADS8396-01"
+
+void max_98396_dai_link(struct snd_soc_dai_link *link);
+void sof_max98396_codec_conf(struct snd_soc_card *card);
 
 /*
  * Maxim MAX98357A/MAX98360A
