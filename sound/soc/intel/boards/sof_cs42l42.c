@@ -48,6 +48,7 @@
 	(((quirk) << SOF_CS42L42_SSP_BT_SHIFT) & SOF_CS42L42_SSP_BT_MASK)
 #define SOF_MAX98357A_SPEAKER_AMP_PRESENT	BIT(29)
 #define SOF_MAX98360A_SPEAKER_AMP_PRESENT	BIT(30)
+#define SOF_MAX98396_SPEAKER_AMP_PRESENT	BIT(31)
 
 enum {
 	LINK_NONE = 0,
@@ -222,11 +223,15 @@ static int sof_card_late_probe(struct snd_soc_card *card)
 static const struct snd_kcontrol_new sof_controls[] = {
 	SOC_DAPM_PIN_SWITCH("Headphone Jack"),
 	SOC_DAPM_PIN_SWITCH("Headset Mic"),
+	SOC_DAPM_PIN_SWITCH("Left Spk"),
+	SOC_DAPM_PIN_SWITCH("Right Spk"),
 };
 
 static const struct snd_soc_dapm_widget sof_widgets[] = {
 	SND_SOC_DAPM_HP("Headphone Jack", NULL),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+	SND_SOC_DAPM_SPK("Left Spk", NULL),
+	SND_SOC_DAPM_SPK("Right Spk", NULL),
 };
 
 static const struct snd_soc_dapm_widget dmic_widgets[] = {
@@ -320,6 +325,8 @@ static int create_spk_amp_dai_links(struct device *dev,
 		max_98357a_dai_link(&links[*id]);
 	} else if (sof_cs42l42_quirk & SOF_MAX98360A_SPEAKER_AMP_PRESENT) {
 		max_98360a_dai_link(&links[*id]);
+	} else if (sof_cs42l42_quirk & SOF_MAX98396_SPEAKER_AMP_PRESENT) {
+		max_98396_dai_link(&links[*id]);
 	} else {
 		dev_err(dev, "no amp defined\n");
 		ret = -EINVAL;
@@ -651,6 +658,9 @@ static int sof_audio_probe(struct platform_device *pdev)
 
 	if (sof_cs42l42_quirk & SOF_SPEAKER_AMP_PRESENT)
 		sof_audio_card_cs42l42.num_links++;
+	if (sof_cs42l42_quirk & SOF_MAX98396_SPEAKER_AMP_PRESENT)
+		sof_max98396_codec_conf(&sof_audio_card_cs42l42);
+
 	if (sof_cs42l42_quirk & SOF_BT_OFFLOAD_PRESENT)
 		sof_audio_card_cs42l42.num_links++;
 
@@ -701,6 +711,17 @@ static const struct platform_device_id board_ids[] = {
 		.driver_data = (kernel_ulong_t)(SOF_CS42L42_SSP_CODEC(0) |
 				SOF_SPEAKER_AMP_PRESENT |
 				SOF_MAX98360A_SPEAKER_AMP_PRESENT |
+				SOF_CS42L42_SSP_AMP(1) |
+				SOF_CS42L42_NUM_HDMIDEV(4) |
+				SOF_BT_OFFLOAD_PRESENT |
+				SOF_CS42L42_SSP_BT(2) |
+				SOF_CS42L42_DAILINK(LINK_HP, LINK_DMIC, LINK_HDMI, LINK_SPK, LINK_BT)),
+	},
+	{
+		.name = "adl_mx98396_cs4242",
+		.driver_data = (kernel_ulong_t)(SOF_CS42L42_SSP_CODEC(0) |
+				SOF_SPEAKER_AMP_PRESENT |
+				SOF_MAX98396_SPEAKER_AMP_PRESENT |
 				SOF_CS42L42_SSP_AMP(1) |
 				SOF_CS42L42_NUM_HDMIDEV(4) |
 				SOF_BT_OFFLOAD_PRESENT |
