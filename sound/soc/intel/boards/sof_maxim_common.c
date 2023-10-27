@@ -64,11 +64,13 @@ static int max_98373_hw_params(struct snd_pcm_substream *substream,
 	int j;
 
 	for_each_rtd_codec_dais(rtd, j, codec_dai) {
-		if (!strcmp(codec_dai->component->name, MAX_98373_DEV0_NAME)) {
+		if (!strcmp(codec_dai->component->name, MAX_98373_DEV0_NAME) ||
+			!strcmp(codec_dai->component->name, MAX_98396_DEV0_NAME)) {
 			/* DEV0 tdm slot configuration */
 			snd_soc_dai_set_tdm_slot(codec_dai, 0x03, 3, 8, 32);
 		}
-		if (!strcmp(codec_dai->component->name, MAX_98373_DEV1_NAME)) {
+		if (!strcmp(codec_dai->component->name, MAX_98373_DEV1_NAME) ||
+			!strcmp(codec_dai->component->name, MAX_98396_DEV1_NAME)) {
 			/* DEV1 tdm slot configuration */
 			snd_soc_dai_set_tdm_slot(codec_dai, 0x0C, 3, 8, 32);
 		}
@@ -342,6 +344,52 @@ void max_98390_set_codec_conf(struct device *dev, struct snd_soc_card *card)
 	}
 }
 EXPORT_SYMBOL_NS(max_98390_set_codec_conf, SND_SOC_INTEL_SOF_MAXIM_COMMON);
+
+/*
+ * Maxim MAX98396
+ */
+static struct snd_soc_codec_conf max_98396_codec_conf[] = {
+	{
+		.dlc = COMP_CODEC_CONF(MAX_98396_DEV0_NAME),
+		.name_prefix = "Right",
+	},
+	{
+		.dlc = COMP_CODEC_CONF(MAX_98396_DEV1_NAME),
+		.name_prefix = "Left",
+	},
+};
+
+struct snd_soc_dai_link_component max_98396_components[] = {
+	{  /* For Right */
+		.name = MAX_98396_DEV0_NAME,
+		.dai_name = MAX_98396_CODEC_DAI,
+	},
+	{  /* For Left */
+		.name = MAX_98396_DEV1_NAME,
+		.dai_name = MAX_98396_CODEC_DAI,
+	},
+};
+
+static const struct snd_soc_ops max_98396_ops = {
+	.hw_params = max_98373_hw_params,
+	.trigger = max_98373_trigger,
+};
+
+void max_98396_dai_link(struct snd_soc_dai_link *link)
+{
+	link->codecs = max_98396_components;
+	link->num_codecs = get_num_codecs(MAX_98396_ACPI_HID);
+	link->init = max_98373_spk_codec_init;
+	link->ops = &max_98396_ops;
+}
+EXPORT_SYMBOL_NS(max_98396_dai_link, SND_SOC_INTEL_SOF_MAXIM_COMMON);
+
+void sof_max98396_codec_conf(struct snd_soc_card *card)
+{
+	card->codec_conf = max_98396_codec_conf;
+	card->num_configs = ARRAY_SIZE(max_98396_codec_conf);
+}
+EXPORT_SYMBOL_NS(max_98396_set_codec_conf, SND_SOC_INTEL_SOF_MAXIM_COMMON);
 
 /*
  * Maxim MAX98357A/MAX98360A

@@ -22,6 +22,7 @@
 #define MAX_98360A_ACPI_HID	"MX98360A"
 #define MAX_98373_ACPI_HID	"MX98373"
 #define MAX_98390_ACPI_HID	"MX98390"
+#define MAX_98396_ACPI_HID	"ADS8396"
 
 /* Nuvoton */
 #define NAU8318_ACPI_HID	"NVTN2012"
@@ -63,6 +64,7 @@ enum sof_ssp_codec {
 	CODEC_RT1015P,
 	CODEC_RT1019P,
 	CODEC_RT1308,
+	CODEC_MAX98396,
 };
 
 enum sof_ssp_codec sof_ssp_detect_codec_type(struct device *dev);
