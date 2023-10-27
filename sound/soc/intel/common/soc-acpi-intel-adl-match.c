@@ -497,6 +497,11 @@ static struct snd_soc_acpi_codecs adl_rt5650_amp = {
 	.codecs = {"10EC5650"}
 };
 
+static const struct snd_soc_acpi_codecs adl_max98396_amp = {
+	.num_codecs = 1,
+	.codecs = {"ADS8396"}
+};
+
 struct snd_soc_acpi_mach snd_soc_acpi_intel_adl_machines[] = {
 	{
 		.comp_ids = &adl_rt5682_rt5682s_hp,
@@ -591,6 +596,13 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_adl_machines[] = {
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &adl_max98360a_amp,
 		.sof_tplg_filename = "sof-adl-max98360a-cs42l42.tplg",
+	},
+	{
+		.id = "10134242",
+		.drv_name = "adl_mx98396_cs4242",
+		.machine_quirk = snd_soc_acpi_codec_list,
+		.quirk_data = &adl_max98396_amp,
+		.sof_tplg_filename = "sof-adl-max98396-cs42l42.tplg",
 	},
 	{
 		.comp_ids = &essx_83x6,

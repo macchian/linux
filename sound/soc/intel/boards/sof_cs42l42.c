@@ -217,6 +217,10 @@ static int create_spk_amp_dai_links(struct device *dev,
 	case CODEC_MAX98360A:
 		max_98360a_dai_link(&links[*id]);
 		break;
+	case CODEC_MAX98396:
+		max_98396_dai_link(&links[*id]);
+		break;
+
 	default:
 		dev_err(dev, "invalid amp type %d\n", amp_type);
 		return -EINVAL;
@@ -466,6 +470,19 @@ static int sof_audio_probe(struct platform_device *pdev)
 
 	sof_audio_card_cs42l42.dai_link = dai_links;
 
+	/* update codec_conf */
+	switch (ctx->amp_type) {
+	case CODEC_MAX98396:
+		max_98396_set_codec_conf(&sof_audio_card_cs42l42);
+		break;
+	case CODEC_NONE:
+		/* no codec conf required */
+		break;
+	default:
+		dev_err(&pdev->dev, "invalid amp type %d\n", ctx->amp_type);
+		return -EINVAL;
+	}
+
 	sof_audio_card_cs42l42.dev = &pdev->dev;
 
 	/* set platform name for each dailink */
@@ -502,6 +519,16 @@ static const struct platform_device_id board_ids[] = {
 				SOF_CS42L42_SSP_BT(2) |
 				SOF_CS42L42_DAILINK(LINK_HP, LINK_DMIC, LINK_HDMI, LINK_SPK, LINK_BT)),
 	},
+	{
+		.name = "adl_mx98396_cs4242",
+		.driver_data = (kernel_ulong_t)(SOF_CS42L42_SSP_CODEC(0) |
+				SOF_CS42L42_SSP_AMP(1) |
+				SOF_CS42L42_NUM_HDMIDEV(4) |
+				SOF_BT_OFFLOAD_PRESENT |
+				SOF_CS42L42_SSP_BT(2) |
+				SOF_CS42L42_DAILINK(LINK_HP, LINK_DMIC, LINK_HDMI, LINK_SPK, LINK_BT)),
+	},
+
 	{ }
 };
 MODULE_DEVICE_TABLE(platform, board_ids);
