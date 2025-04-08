@@ -12,6 +12,7 @@
 #include "xe_gt_printk.h"
 #include "xe_guc.h"
 #include "xe_guc_ct.h"
+#include "xe_gt_stats.h"
 #include "xe_mmio.h"
 #include "xe_pm.h"
 #include "xe_sriov.h"
@@ -36,6 +37,15 @@ static long tlb_timeout_jiffies(struct xe_gt *gt)
 	return hw_tlb_timeout + 2 * delay;
 }
 
+static void xe_gt_tlb_invalidation_fence_fini(struct xe_gt_tlb_invalidation_fence *fence)
+{
+	if (WARN_ON_ONCE(!fence->gt))
+		return;
+
+	xe_pm_runtime_put(gt_to_xe(fence->gt));
+	fence->gt = NULL; /* fini() should be called once */
+}
+
 static void
 __invalidation_fence_signal(struct xe_device *xe, struct xe_gt_tlb_invalidation_fence *fence)
 {
@@ -55,12 +65,22 @@ invalidation_fence_signal(struct xe_device *xe, struct xe_gt_tlb_invalidation_fe
 	__invalidation_fence_signal(xe, fence);
 }
 
+void xe_gt_tlb_invalidation_fence_signal(struct xe_gt_tlb_invalidation_fence *fence)
+{
+	if (WARN_ON_ONCE(!fence->gt))
+		return;
+
+	__invalidation_fence_signal(gt_to_xe(fence->gt), fence);
+}
+
 static void xe_gt_tlb_fence_timeout(struct work_struct *work)
 {
 	struct xe_gt *gt = container_of(work, struct xe_gt,
 					tlb_invalidation.fence_tdr.work);
 	struct xe_device *xe = gt_to_xe(gt);
 	struct xe_gt_tlb_invalidation_fence *fence, *next;
+
+	LNL_FLUSH_WORK(&gt->uc.guc.ct.g2h_worker);
 
 	spin_lock_irq(&gt->tlb_invalidation.pending_lock);
 	list_for_each_entry_safe(fence, next,
@@ -86,15 +106,15 @@ static void xe_gt_tlb_fence_timeout(struct work_struct *work)
 }
 
 /**
- * xe_gt_tlb_invalidation_init - Initialize GT TLB invalidation state
- * @gt: graphics tile
+ * xe_gt_tlb_invalidation_init_early - Initialize GT TLB invalidation state
+ * @gt: GT structure
  *
  * Initialize GT TLB invalidation state, purely software initialization, should
  * be called once during driver load.
  *
  * Return: 0 on success, negative error code on error.
  */
-int xe_gt_tlb_invalidation_init(struct xe_gt *gt)
+int xe_gt_tlb_invalidation_init_early(struct xe_gt *gt)
 {
 	gt->tlb_invalidation.seqno = 1;
 	INIT_LIST_HEAD(&gt->tlb_invalidation.pending_fences);
@@ -108,7 +128,7 @@ int xe_gt_tlb_invalidation_init(struct xe_gt *gt)
 
 /**
  * xe_gt_tlb_invalidation_reset - Initialize GT TLB invalidation reset
- * @gt: graphics tile
+ * @gt: GT structure
  *
  * Signal any pending invalidation fences, should be called during a GT reset
  */
@@ -182,7 +202,7 @@ static int send_tlb_invalidation(struct xe_guc *guc,
 	action[1] = seqno;
 	ret = xe_guc_ct_send_locked(&guc->ct, action, len,
 				    G2H_LEN_DW_TLB_INVALIDATE, 1);
-	if (!ret && fence) {
+	if (!ret) {
 		spin_lock_irq(&gt->tlb_invalidation.pending_lock);
 		/*
 		 * We haven't actually published the TLB fence as per
@@ -203,7 +223,7 @@ static int send_tlb_invalidation(struct xe_guc *guc,
 						   tlb_timeout_jiffies(gt));
 		}
 		spin_unlock_irq(&gt->tlb_invalidation.pending_lock);
-	} else if (ret < 0 && fence) {
+	} else {
 		__invalidation_fence_signal(xe, fence);
 	}
 	if (!ret) {
@@ -213,6 +233,7 @@ static int send_tlb_invalidation(struct xe_guc *guc,
 			gt->tlb_invalidation.seqno = 1;
 	}
 	mutex_unlock(&guc->ct.lock);
+	xe_gt_stats_incr(gt, XE_GT_STATS_ID_TLB_INVAL, 1);
 
 	return ret;
 }
@@ -223,7 +244,7 @@ static int send_tlb_invalidation(struct xe_guc *guc,
 
 /**
  * xe_gt_tlb_invalidation_guc - Issue a TLB invalidation on this GT for the GuC
- * @gt: graphics tile
+ * @gt: GT structure
  * @fence: invalidation fence which will be signal on TLB invalidation
  * completion
  *
@@ -240,14 +261,23 @@ static int xe_gt_tlb_invalidation_guc(struct xe_gt *gt,
 		0,  /* seqno, replaced in send_tlb_invalidation */
 		MAKE_INVAL_OP(XE_GUC_TLB_INVAL_GUC),
 	};
+	int ret;
 
-	return send_tlb_invalidation(&gt->uc.guc, fence, action,
-				     ARRAY_SIZE(action));
+	ret = send_tlb_invalidation(&gt->uc.guc, fence, action,
+				    ARRAY_SIZE(action));
+	/*
+	 * -ECANCELED indicates the CT is stopped for a GT reset. TLB caches
+	 *  should be nuked on a GT reset so this error can be ignored.
+	 */
+	if (ret == -ECANCELED)
+		return 0;
+
+	return ret;
 }
 
 /**
  * xe_gt_tlb_invalidation_ggtt - Issue a TLB invalidation on this GT for the GGTT
- * @gt: graphics tile
+ * @gt: GT structure
  *
  * Issue a TLB invalidation for the GGTT. Completion of TLB invalidation is
  * synchronous.
@@ -257,6 +287,7 @@ static int xe_gt_tlb_invalidation_guc(struct xe_gt *gt,
 int xe_gt_tlb_invalidation_ggtt(struct xe_gt *gt)
 {
 	struct xe_device *xe = gt_to_xe(gt);
+	unsigned int fw_ref;
 
 	if (xe_guc_ct_enabled(&gt->uc.guc.ct) &&
 	    gt->uc.guc.submission_state.enabled) {
@@ -265,27 +296,27 @@ int xe_gt_tlb_invalidation_ggtt(struct xe_gt *gt)
 
 		xe_gt_tlb_invalidation_fence_init(gt, &fence, true);
 		ret = xe_gt_tlb_invalidation_guc(gt, &fence);
-		if (ret < 0) {
-			xe_gt_tlb_invalidation_fence_fini(&fence);
+		if (ret)
 			return ret;
-		}
 
 		xe_gt_tlb_invalidation_fence_wait(&fence);
 	} else if (xe_device_uc_enabled(xe) && !xe_device_wedged(xe)) {
+		struct xe_mmio *mmio = &gt->mmio;
+
 		if (IS_SRIOV_VF(xe))
 			return 0;
 
-		xe_gt_WARN_ON(gt, xe_force_wake_get(gt_to_fw(gt), XE_FW_GT));
+		fw_ref = xe_force_wake_get(gt_to_fw(gt), XE_FW_GT);
 		if (xe->info.platform == XE_PVC || GRAPHICS_VER(xe) >= 20) {
-			xe_mmio_write32(gt, PVC_GUC_TLB_INV_DESC1,
+			xe_mmio_write32(mmio, PVC_GUC_TLB_INV_DESC1,
 					PVC_GUC_TLB_INV_DESC1_INVALIDATE);
-			xe_mmio_write32(gt, PVC_GUC_TLB_INV_DESC0,
+			xe_mmio_write32(mmio, PVC_GUC_TLB_INV_DESC0,
 					PVC_GUC_TLB_INV_DESC0_VALID);
 		} else {
-			xe_mmio_write32(gt, GUC_TLB_INV_CR,
+			xe_mmio_write32(mmio, GUC_TLB_INV_CR,
 					GUC_TLB_INV_CR_INVALIDATE);
 		}
-		xe_force_wake_put(gt_to_fw(gt), XE_FW_GT);
+		xe_force_wake_put(gt_to_fw(gt), fw_ref);
 	}
 
 	return 0;
@@ -295,7 +326,7 @@ int xe_gt_tlb_invalidation_ggtt(struct xe_gt *gt)
  * xe_gt_tlb_invalidation_range - Issue a TLB invalidation on this GT for an
  * address range
  *
- * @gt: graphics tile
+ * @gt: GT structure
  * @fence: invalidation fence which will be signal on TLB invalidation
  * completion
  * @start: start address
@@ -381,7 +412,7 @@ int xe_gt_tlb_invalidation_range(struct xe_gt *gt,
 
 /**
  * xe_gt_tlb_invalidation_vma - Issue a TLB invalidation on this GT for a VMA
- * @gt: graphics tile
+ * @gt: GT structure
  * @fence: invalidation fence which will be signal on TLB invalidation
  * completion, can be NULL
  * @vma: VMA to invalidate
@@ -494,7 +525,8 @@ static const struct dma_fence_ops invalidation_fence_ops = {
  * @stack: fence is stack variable
  *
  * Initialize TLB invalidation fence for use. xe_gt_tlb_invalidation_fence_fini
- * must be called if fence is not signaled.
+ * will be automatically called when fence is signalled (all fences must signal),
+ * even on error.
  */
 void xe_gt_tlb_invalidation_fence_init(struct xe_gt *gt,
 				       struct xe_gt_tlb_invalidation_fence *fence,
@@ -513,15 +545,4 @@ void xe_gt_tlb_invalidation_fence_init(struct xe_gt *gt,
 	else
 		dma_fence_get(&fence->base);
 	fence->gt = gt;
-}
-
-/**
- * xe_gt_tlb_invalidation_fence_fini - Finalize TLB invalidation fence
- * @fence: TLB invalidation fence to finalize
- *
- * Drop PM ref which fence took durinig init.
- */
-void xe_gt_tlb_invalidation_fence_fini(struct xe_gt_tlb_invalidation_fence *fence)
-{
-	xe_pm_runtime_put(gt_to_xe(fence->gt));
 }

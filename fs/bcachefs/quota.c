@@ -60,7 +60,7 @@ const struct bch_sb_field_ops bch_sb_field_ops_quota = {
 };
 
 int bch2_quota_validate(struct bch_fs *c, struct bkey_s_c k,
-			enum bch_validate_flags flags)
+			struct bkey_validate_context from)
 {
 	int ret = 0;
 
@@ -869,7 +869,7 @@ static int bch2_set_quota(struct super_block *sb, struct kqid qid,
 	bkey_quota_init(&new_quota.k_i);
 	new_quota.k.p = POS(qid.type, from_kqid(&init_user_ns, qid));
 
-	ret = bch2_trans_do(c, NULL, NULL, 0,
+	ret = bch2_trans_commit_do(c, NULL, NULL, 0,
 			    bch2_set_quota_trans(trans, &new_quota, qdq)) ?:
 		__bch2_quota_set(c, bkey_i_to_s_c(&new_quota.k_i), qdq);
 

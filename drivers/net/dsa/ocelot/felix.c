@@ -1316,6 +1316,14 @@ static void felix_get_eth_phy_stats(struct dsa_switch *ds, int port,
 	ocelot_port_get_eth_phy_stats(ocelot, port, phy_stats);
 }
 
+static void felix_get_ts_stats(struct dsa_switch *ds, int port,
+			       struct ethtool_ts_stats *ts_stats)
+{
+	struct ocelot *ocelot = ds->priv;
+
+	ocelot_port_get_ts_stats(ocelot, port, ts_stats);
+}
+
 static void felix_get_strings(struct dsa_switch *ds, int port,
 			      u32 stringset, u8 *data)
 {
@@ -1370,9 +1378,8 @@ static int felix_parse_ports_node(struct felix *felix,
 				  phy_interface_t *port_phy_modes)
 {
 	struct device *dev = felix->ocelot.dev;
-	struct device_node *child;
 
-	for_each_available_child_of_node(ports_node, child) {
+	for_each_available_child_of_node_scoped(ports_node, child) {
 		phy_interface_t phy_mode;
 		u32 port;
 		int err;
@@ -1381,7 +1388,6 @@ static int felix_parse_ports_node(struct felix *felix,
 		if (of_property_read_u32(child, "reg", &port) < 0) {
 			dev_err(dev, "Port number not defined in device tree "
 				"(property \"reg\")\n");
-			of_node_put(child);
 			return -ENODEV;
 		}
 
@@ -1391,7 +1397,6 @@ static int felix_parse_ports_node(struct felix *felix,
 			dev_err(dev, "Failed to read phy-mode or "
 				"phy-interface-type property for port %d\n",
 				port);
-			of_node_put(child);
 			return -ENODEV;
 		}
 
@@ -2240,6 +2245,7 @@ static const struct dsa_switch_ops felix_switch_ops = {
 	.get_stats64			= felix_get_stats64,
 	.get_pause_stats		= felix_get_pause_stats,
 	.get_rmon_stats			= felix_get_rmon_stats,
+	.get_ts_stats			= felix_get_ts_stats,
 	.get_eth_ctrl_stats		= felix_get_eth_ctrl_stats,
 	.get_eth_mac_stats		= felix_get_eth_mac_stats,
 	.get_eth_phy_stats		= felix_get_eth_phy_stats,

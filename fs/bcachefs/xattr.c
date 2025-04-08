@@ -71,7 +71,7 @@ const struct bch_hash_desc bch2_xattr_hash_desc = {
 };
 
 int bch2_xattr_validate(struct bch_fs *c, struct bkey_s_c k,
-		       enum bch_validate_flags flags)
+			struct bkey_validate_context from)
 {
 	struct bkey_s_c_xattr xattr = bkey_s_c_to_xattr(k);
 	unsigned val_u64s = xattr_val_u64s(xattr.v->x_name_len,
@@ -250,17 +250,27 @@ static int __bch2_xattr_emit(const char *prefix,
 	return 0;
 }
 
+static inline const char *bch2_xattr_prefix(unsigned type, struct dentry *dentry)
+{
+	const struct xattr_handler *handler = bch2_xattr_type_to_handler(type);
+
+	if (!xattr_handler_can_list(handler, dentry))
+		return NULL;
+
+	return xattr_prefix(handler);
+}
+
 static int bch2_xattr_emit(struct dentry *dentry,
 			    const struct bch_xattr *xattr,
 			    struct xattr_buf *buf)
 {
-	const struct xattr_handler *handler =
-		bch2_xattr_type_to_handler(xattr->x_type);
+	const char *prefix;
 
-	return handler && (!handler->list || handler->list(dentry))
-		? __bch2_xattr_emit(handler->prefix ?: handler->name,
-				    xattr->x_name, xattr->x_name_len, buf)
-		: 0;
+	prefix = bch2_xattr_prefix(xattr->x_type, dentry);
+	if (!prefix)
+		return 0;
+
+	return __bch2_xattr_emit(prefix, xattr->x_name, xattr->x_name_len, buf);
 }
 
 static int bch2_xattr_list_bcachefs(struct bch_fs *c,
@@ -295,54 +305,23 @@ ssize_t bch2_xattr_list(struct dentry *dentry, char *buffer, size_t buffer_size)
 {
 	struct bch_fs *c = dentry->d_sb->s_fs_info;
 	struct bch_inode_info *inode = to_bch_ei(dentry->d_inode);
-	struct btree_trans *trans = bch2_trans_get(c);
-	struct btree_iter iter;
-	struct bkey_s_c k;
 	struct xattr_buf buf = { .buf = buffer, .len = buffer_size };
 	u64 offset = 0, inum = inode->ei_inode.bi_inum;
-	u32 snapshot;
-	int ret;
-retry:
-	bch2_trans_begin(trans);
-	iter = (struct btree_iter) { NULL };
 
-	ret = bch2_subvolume_get_snapshot(trans, inode->ei_subvol, &snapshot);
-	if (ret)
-		goto err;
+	int ret = bch2_trans_run(c,
+		for_each_btree_key_in_subvolume_max(trans, iter, BTREE_ID_xattrs,
+				   POS(inum, offset),
+				   POS(inum, U64_MAX),
+				   inode->ei_inum.subvol, 0, k, ({
+			if (k.k->type != KEY_TYPE_xattr)
+				continue;
 
-	for_each_btree_key_upto_norestart(trans, iter, BTREE_ID_xattrs,
-			   SPOS(inum, offset, snapshot),
-			   POS(inum, U64_MAX), 0, k, ret) {
-		if (k.k->type != KEY_TYPE_xattr)
-			continue;
+			bch2_xattr_emit(dentry, bkey_s_c_to_xattr(k).v, &buf);
+		}))) ?:
+		bch2_xattr_list_bcachefs(c, &inode->ei_inode, &buf, false) ?:
+		bch2_xattr_list_bcachefs(c, &inode->ei_inode, &buf, true);
 
-		ret = bch2_xattr_emit(dentry, bkey_s_c_to_xattr(k).v, &buf);
-		if (ret)
-			break;
-	}
-
-	offset = iter.pos.offset;
-	bch2_trans_iter_exit(trans, &iter);
-err:
-	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
-		goto retry;
-
-	bch2_trans_put(trans);
-
-	if (ret)
-		goto out;
-
-	ret = bch2_xattr_list_bcachefs(c, &inode->ei_inode, &buf, false);
-	if (ret)
-		goto out;
-
-	ret = bch2_xattr_list_bcachefs(c, &inode->ei_inode, &buf, true);
-	if (ret)
-		goto out;
-
-	return buf.used;
-out:
-	return bch2_err_class(ret);
+	return ret ? bch2_err_class(ret) : buf.used;
 }
 
 static int bch2_xattr_get_handler(const struct xattr_handler *handler,
@@ -351,7 +330,7 @@ static int bch2_xattr_get_handler(const struct xattr_handler *handler,
 {
 	struct bch_inode_info *inode = to_bch_ei(vinode);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
-	int ret = bch2_trans_do(c, NULL, NULL, 0,
+	int ret = bch2_trans_do(c,
 		bch2_xattr_get_trans(trans, inode, name, buffer, size, handler->flags));
 
 	if (ret < 0 && bch2_err_matches(ret, ENOENT))
@@ -586,13 +565,6 @@ static int bch2_xattr_bcachefs_set(const struct xattr_handler *handler,
 	ret = bch2_write_inode(c, inode, inode_opt_set_fn, &s, 0);
 err:
 	mutex_unlock(&inode->ei_update_lock);
-
-	if (value &&
-	    (opt_id == Opt_background_target ||
-	     opt_id == Opt_background_compression ||
-	     (opt_id == Opt_compression && !inode_opt_get(c, &inode->ei_inode, background_compression))))
-		bch2_set_rebalance_needs_scan(c, inode->ei_inode.bi_inum);
-
 err_class_exit:
 	return bch2_err_class(ret);
 }
@@ -630,12 +602,8 @@ static const struct xattr_handler bch_xattr_bcachefs_effective_handler = {
 
 #endif /* NO_BCACHEFS_FS */
 
-const struct xattr_handler *bch2_xattr_handlers[] = {
+const struct xattr_handler * const bch2_xattr_handlers[] = {
 	&bch_xattr_user_handler,
-#ifdef CONFIG_BCACHEFS_POSIX_ACL
-	&nop_posix_acl_access,
-	&nop_posix_acl_default,
-#endif
 	&bch_xattr_trusted_handler,
 	&bch_xattr_security_handler,
 #ifndef NO_BCACHEFS_FS

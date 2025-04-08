@@ -6,7 +6,7 @@
 //
 // Author: Herve Codina <herve.codina@bootlin.com>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/clk.h>
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
@@ -26,8 +26,7 @@ struct peb2466_lookup {
 	unsigned int count;
 };
 
-#define PEB2466_TLV_SIZE  (sizeof((unsigned int []){TLV_DB_SCALE_ITEM(0, 0, 0)}) / \
-			   sizeof(unsigned int))
+#define PEB2466_TLV_SIZE ARRAY_SIZE(((unsigned int[]){TLV_DB_SCALE_ITEM(0, 0, 0)}))
 
 struct peb2466_lkup_ctrl {
 	int reg;

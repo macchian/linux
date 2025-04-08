@@ -142,7 +142,7 @@ static __always_inline int syscall_32_enter(struct pt_regs *regs)
 #ifdef CONFIG_IA32_EMULATION
 bool __ia32_enabled __ro_after_init = !IS_ENABLED(CONFIG_IA32_EMULATION_DEFAULT_DISABLED);
 
-static int ia32_emulation_override_cmdline(char *arg)
+static int __init ia32_emulation_override_cmdline(char *arg)
 {
 	return kstrtobool(arg, &__ia32_enabled);
 }
@@ -150,7 +150,7 @@ early_param("ia32_emulation", ia32_emulation_override_cmdline);
 #endif
 
 /*
- * Invoke a 32-bit syscall.  Called with IRQs on in CONTEXT_KERNEL.
+ * Invoke a 32-bit syscall.  Called with IRQs on in CT_STATE_KERNEL.
  */
 static __always_inline void do_syscall_32_irqs_on(struct pt_regs *regs, int nr)
 {
@@ -190,6 +190,7 @@ static __always_inline bool int80_is_external(void)
 
 /**
  * do_int80_emulation - 32-bit legacy syscall C entry from asm
+ * @regs: syscall arguments in struct pt_args on the stack.
  *
  * This entry point can be used by 32-bit and 64-bit programs to perform
  * 32-bit system calls.  Instances of INT $0x80 can be found inline in

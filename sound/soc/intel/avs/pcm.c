@@ -16,6 +16,7 @@
 #include <sound/soc-component.h>
 #include "avs.h"
 #include "path.h"
+#include "pcm.h"
 #include "topology.h"
 #include "../../codecs/hda.h"
 
@@ -30,6 +31,7 @@ struct avs_dma_data {
 		struct hdac_ext_stream *host_stream;
 	};
 
+	struct work_struct period_elapsed_work;
 	struct snd_pcm_substream *substream;
 };
 
@@ -56,6 +58,22 @@ avs_dai_find_path_template(struct snd_soc_dai *dai, bool is_fe, int direction)
 	return dw->priv;
 }
 
+static void avs_period_elapsed_work(struct work_struct *work)
+{
+	struct avs_dma_data *data = container_of(work, struct avs_dma_data, period_elapsed_work);
+
+	snd_pcm_period_elapsed(data->substream);
+}
+
+void avs_period_elapsed(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *dai = snd_soc_rtd_to_cpu(rtd, 0);
+	struct avs_dma_data *data = snd_soc_dai_get_dma_data(dai, substream);
+
+	schedule_work(&data->period_elapsed_work);
+}
+
 static int avs_dai_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
@@ -77,6 +95,7 @@ static int avs_dai_startup(struct snd_pcm_substream *substream, struct snd_soc_d
 	data->substream = substream;
 	data->template = template;
 	data->adev = adev;
+	INIT_WORK(&data->period_elapsed_work, avs_period_elapsed_work);
 	snd_soc_dai_set_dma_data(dai, substream, data);
 
 	if (rtd->dai_link->ignore_suspend)
@@ -142,6 +161,7 @@ static int avs_dai_be_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dpcm *dpcm;
 
 	be = snd_soc_substream_to_rtd(substream);
+	/* dpcm_fe_dai_open() guarantees the list is not empty at this point. */
 	for_each_dpcm_fe(be, substream->stream, dpcm) {
 		fe = dpcm->fe;
 		fe_hw_params = &fe->dpcm[substream->stream].hw_params;
@@ -490,7 +510,7 @@ static int avs_pcm_hw_constraints_init(struct snd_pcm_substream *substream)
 			    SNDRV_PCM_HW_PARAM_FORMAT, SNDRV_PCM_HW_PARAM_CHANNELS,
 			    SNDRV_PCM_HW_PARAM_RATE, -1);
 
-	return ret;
+	return 0;
 }
 
 static int avs_dai_fe_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
@@ -557,6 +577,7 @@ static int avs_dai_fe_hw_params(struct snd_pcm_substream *substream,
 	hdac_stream(host_stream)->format_val = 0;
 
 	fe = snd_soc_substream_to_rtd(substream);
+	/* dpcm_fe_dai_open() guarantees the list is not empty at this point. */
 	for_each_dpcm_be(fe, substream->stream, dpcm) {
 		be = dpcm->be;
 		be_hw_params = &be->dpcm[substream->stream].hw_params;
@@ -1359,7 +1380,7 @@ int avs_i2s_platform_register(struct avs_dev *adev, const char *name, unsigned l
 		for_each_set_bit(i, &port_mask, ssp_count)
 			cpu_count += hweight_long(tdms[i]);
 
-	cpus = devm_kzalloc(adev->dev, sizeof(*cpus) * cpu_count, GFP_KERNEL);
+	cpus = devm_kcalloc(adev->dev, cpu_count, sizeof(*cpus), GFP_KERNEL);
 	if (!cpus)
 		return -ENOMEM;
 
@@ -1545,6 +1566,7 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 		if (ret < 0) {
 			dev_err(component->dev, "create widgets failed: %d\n",
 				ret);
+			snd_soc_unregister_dai(dai);
 			goto exit;
 		}
 	}
@@ -1559,8 +1581,8 @@ exit:
 
 static void avs_component_hda_remove(struct snd_soc_component *component)
 {
-	avs_component_hda_unregister_dais(component);
 	avs_component_remove(component);
+	avs_component_hda_unregister_dais(component);
 }
 
 static int avs_component_hda_open(struct snd_soc_component *component,

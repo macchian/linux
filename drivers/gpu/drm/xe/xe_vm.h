@@ -17,7 +17,6 @@ struct drm_printer;
 struct drm_file;
 
 struct ttm_buffer_object;
-struct ttm_validate_buffer;
 
 struct xe_exec_queue;
 struct xe_file;
@@ -258,6 +257,8 @@ static inline struct dma_resv *xe_vm_resv(struct xe_vm *vm)
 {
 	return drm_gpuvm_resv(&vm->gpuvm);
 }
+
+void xe_vm_kill(struct xe_vm *vm, bool unlocked);
 
 /**
  * xe_vm_assert_held(vm) - Assert that the vm's reservation object is held.

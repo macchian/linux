@@ -1449,7 +1449,9 @@ int iwl_pcie_enqueue_hcmd(struct iwl_trans *trans,
 		spin_unlock_irqrestore(&txq->lock, flags);
 
 		IWL_ERR(trans, "No space in command queue\n");
-		iwl_op_mode_cmd_queue_full(trans->op_mode);
+		iwl_op_mode_nic_error(trans->op_mode,
+				      IWL_ERR_TYPE_CMD_QUEUE_FULL);
+		iwl_trans_schedule_reset(trans, IWL_ERR_TYPE_CMD_QUEUE_FULL);
 		idx = -ENOSPC;
 		goto free_dup_buf;
 	}
@@ -2350,6 +2352,10 @@ void iwl_pcie_reclaim(struct iwl_trans *trans, int txq_id, int ssn,
 	txq_read_ptr = txq->read_ptr;
 	txq_write_ptr = txq->write_ptr;
 	spin_unlock(&txq->lock);
+
+	/* There is nothing to do if we are flushing an empty queue */
+	if (is_flush && txq_write_ptr == txq_read_ptr)
+		goto out;
 
 	read_ptr = iwl_txq_get_cmd_index(txq, txq_read_ptr);
 

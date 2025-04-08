@@ -886,6 +886,10 @@ static int vmw_stdu_connector_atomic_check(struct drm_connector *conn,
 	struct drm_crtc_state *new_crtc_state;
 
 	conn_state = drm_atomic_get_connector_state(state, conn);
+
+	if (IS_ERR(conn_state))
+		return PTR_ERR(conn_state);
+
 	du = vmw_connector_to_stdu(conn);
 
 	if (!conn_state->crtc)
@@ -1589,7 +1593,6 @@ static int vmw_stdu_init(struct vmw_private *dev_priv, unsigned unit)
 	}
 
 	drm_connector_helper_add(connector, &vmw_stdu_connector_helper_funcs);
-	connector->status = vmw_du_connector_detect(connector, false);
 
 	ret = drm_encoder_init(dev, encoder, &vmw_stdu_encoder_funcs,
 			       DRM_MODE_ENCODER_VIRTUAL, NULL);

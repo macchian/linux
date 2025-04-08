@@ -8,15 +8,13 @@
 #include "debug.h"
 #include "super.h"
 
-enum bch_validate_flags;
-
 /* How out of date a pointer gen is allowed to be: */
 #define BUCKET_GC_GEN_MAX	96U
 
 static inline bool bch2_dev_bucket_exists(struct bch_fs *c, struct bpos pos)
 {
 	rcu_read_lock();
-	struct bch_dev *ca = bch2_dev_rcu(c, pos.inode);
+	struct bch_dev *ca = bch2_dev_rcu_noerror(c, pos.inode);
 	bool ret = ca && bucket_valid(ca, pos.offset);
 	rcu_read_unlock();
 	return ret;
@@ -168,6 +166,9 @@ static inline bool data_type_movable(enum bch_data_type type)
 static inline u64 alloc_lru_idx_fragmentation(struct bch_alloc_v4 a,
 					      struct bch_dev *ca)
 {
+	if (a.data_type >= BCH_DATA_NR)
+		return 0;
+
 	if (!data_type_movable(a.data_type) ||
 	    !bch2_bucket_sectors_fragmented(ca, a))
 		return 0;
@@ -242,10 +243,14 @@ struct bkey_i_alloc_v4 *bch2_alloc_to_v4_mut(struct btree_trans *, struct bkey_s
 
 int bch2_bucket_io_time_reset(struct btree_trans *, unsigned, size_t, int);
 
-int bch2_alloc_v1_validate(struct bch_fs *, struct bkey_s_c, enum bch_validate_flags);
-int bch2_alloc_v2_validate(struct bch_fs *, struct bkey_s_c, enum bch_validate_flags);
-int bch2_alloc_v3_validate(struct bch_fs *, struct bkey_s_c, enum bch_validate_flags);
-int bch2_alloc_v4_validate(struct bch_fs *, struct bkey_s_c, enum bch_validate_flags);
+int bch2_alloc_v1_validate(struct bch_fs *, struct bkey_s_c,
+			   struct bkey_validate_context);
+int bch2_alloc_v2_validate(struct bch_fs *, struct bkey_s_c,
+			   struct bkey_validate_context);
+int bch2_alloc_v3_validate(struct bch_fs *, struct bkey_s_c,
+			   struct bkey_validate_context);
+int bch2_alloc_v4_validate(struct bch_fs *, struct bkey_s_c,
+			   struct bkey_validate_context);
 void bch2_alloc_v4_swab(struct bkey_s);
 void bch2_alloc_to_text(struct printbuf *, struct bch_fs *, struct bkey_s_c);
 
@@ -279,7 +284,7 @@ void bch2_alloc_to_text(struct printbuf *, struct bch_fs *, struct bkey_s_c);
 })
 
 int bch2_bucket_gens_validate(struct bch_fs *, struct bkey_s_c,
-			     enum bch_validate_flags);
+			      struct bkey_validate_context);
 void bch2_bucket_gens_to_text(struct printbuf *, struct bch_fs *, struct bkey_s_c);
 
 #define bch2_bkey_ops_bucket_gens ((struct bkey_ops) {	\
@@ -304,6 +309,8 @@ int bch2_alloc_key_to_dev_counters(struct btree_trans *, struct bch_dev *,
 int bch2_trigger_alloc(struct btree_trans *, enum btree_id, unsigned,
 		       struct bkey_s_c, struct bkey_s,
 		       enum btree_iter_update_trigger_flags);
+
+int bch2_check_discard_freespace_key(struct btree_trans *, struct btree_iter *, u8 *, bool);
 int bch2_check_alloc_info(struct bch_fs *);
 int bch2_check_alloc_to_lru_refs(struct bch_fs *);
 void bch2_dev_do_discards(struct bch_dev *);
@@ -338,6 +345,7 @@ static inline const struct bch_backpointer *alloc_v4_backpointers_c(const struct
 
 int bch2_dev_freespace_init(struct bch_fs *, struct bch_dev *, u64, u64);
 int bch2_fs_freespace_init(struct bch_fs *);
+int bch2_dev_remove_alloc(struct bch_fs *, struct bch_dev *);
 
 void bch2_recalc_capacity(struct bch_fs *);
 u64 bch2_min_rw_member_capacity(struct bch_fs *);

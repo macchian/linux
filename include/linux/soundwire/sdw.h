@@ -4,12 +4,20 @@
 #ifndef __SOUNDWIRE_H
 #define __SOUNDWIRE_H
 
+#include <linux/bitfield.h>
 #include <linux/bug.h>
-#include <linux/lockdep_types.h>
+#include <linux/completion.h>
+#include <linux/device.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
+#include <linux/lockdep_types.h>
 #include <linux/mod_devicetable.h>
-#include <linux/bitfield.h>
+#include <linux/mutex.h>
+#include <linux/types.h>
+#include <sound/sdca.h>
+
+struct dentry;
+struct fwnode_handle;
 
 struct sdw_bus;
 struct sdw_slave;
@@ -142,12 +150,14 @@ enum sdw_dpn_pkg_mode {
  *
  * @SDW_STREAM_PCM: PCM data stream
  * @SDW_STREAM_PDM: PDM data stream
+ * @SDW_STREAM_BPT: BPT data stream
  *
  * spec doesn't define this, but is used in implementation
  */
 enum sdw_stream_type {
 	SDW_STREAM_PCM = 0,
 	SDW_STREAM_PDM = 1,
+	SDW_STREAM_BPT = 2,
 };
 
 /**
@@ -472,9 +482,9 @@ struct sdw_slave_id {
 	__u8 sdw_version:4;
 };
 
-struct sdw_extended_slave_id {
-	int link_id;
-	struct sdw_slave_id id;
+struct sdw_peripherals {
+	int num_peripherals;
+	struct sdw_slave *array[];
 };
 
 /*
@@ -614,7 +624,6 @@ struct sdw_slave_ops {
 	int (*clk_stop)(struct sdw_slave *slave,
 			enum sdw_clk_stop_mode mode,
 			enum sdw_clk_stop_type type);
-
 };
 
 /**
@@ -647,6 +656,7 @@ struct sdw_slave_ops {
  * @is_mockup_device: status flag used to squelch errors in the command/control
  * protocol for SoundWire mockup devices
  * @sdw_dev_lock: mutex used to protect callbacks/remove races
+ * @sdca_data: structure containing all device data for SDCA helpers
  */
 struct sdw_slave {
 	struct sdw_slave_id id;
@@ -670,6 +680,7 @@ struct sdw_slave {
 	bool first_interrupt_done;
 	bool is_mockup_device;
 	struct mutex sdw_dev_lock; /* protect callbacks/remove races */
+	struct sdca_device_data sdca_data;
 };
 
 #define dev_to_sdw_dev(_dev) container_of(_dev, struct sdw_slave, dev)
@@ -688,8 +699,7 @@ struct sdw_master_device {
 	container_of(d, struct sdw_master_device, dev)
 
 struct sdw_driver {
-	int (*probe)(struct sdw_slave *sdw,
-			const struct sdw_device_id *id);
+	int (*probe)(struct sdw_slave *sdw, const struct sdw_device_id *id);
 	int (*remove)(struct sdw_slave *sdw);
 	void (*shutdown)(struct sdw_slave *sdw);
 
@@ -708,7 +718,7 @@ struct sdw_driver {
 	SDW_SLAVE_ENTRY_EXT((_mfg_id), (_part_id), 0, 0, (_drv_data))
 
 int sdw_handle_slave_status(struct sdw_bus *bus,
-			enum sdw_slave_status status[]);
+			    enum sdw_slave_status status[]);
 
 /*
  * SDW master structures and APIs
@@ -790,15 +800,14 @@ struct sdw_enable_ch {
  */
 struct sdw_master_port_ops {
 	int (*dpn_set_port_params)(struct sdw_bus *bus,
-			struct sdw_port_params *port_params,
-			unsigned int bank);
+				   struct sdw_port_params *port_params,
+				   unsigned int bank);
 	int (*dpn_set_port_transport_params)(struct sdw_bus *bus,
-			struct sdw_transport_params *transport_params,
-			enum sdw_reg_bank bank);
-	int (*dpn_port_prep)(struct sdw_bus *bus,
-			struct sdw_prepare_ch *prepare_ch);
+					     struct sdw_transport_params *transport_params,
+					     enum sdw_reg_bank bank);
+	int (*dpn_port_prep)(struct sdw_bus *bus, struct sdw_prepare_ch *prepare_ch);
 	int (*dpn_port_enable_ch)(struct sdw_bus *bus,
-			struct sdw_enable_ch *enable_ch, unsigned int bank);
+				  struct sdw_enable_ch *enable_ch, unsigned int bank);
 };
 
 struct sdw_msg;
@@ -815,6 +824,15 @@ struct sdw_defer {
 	struct completion complete;
 };
 
+/*
+ * Add a practical limit to BPT transfer sizes. BPT is typically used
+ * to transfer firmware, and larger firmware transfers will increase
+ * the cold latency beyond typical OS or user requirements.
+ */
+#define SDW_BPT_MSG_MAX_BYTES  (1024 * 1024)
+
+struct sdw_bpt_msg;
+
 /**
  * struct sdw_master_ops - Master driver ops
  * @read_prop: Read Master properties
@@ -830,17 +848,18 @@ struct sdw_defer {
  * @get_device_num: Callback for vendor-specific device_number allocation
  * @put_device_num: Callback for vendor-specific device_number release
  * @new_peripheral_assigned: Callback to handle enumeration of new peripheral.
+ * @bpt_send_async: reserve resources for BPT stream and send message
+ * using BTP protocol
+ * @bpt_wait: wait for message completion using BTP protocol
+ * and release resources
  */
 struct sdw_master_ops {
 	int (*read_prop)(struct sdw_bus *bus);
-	u64 (*override_adr)
-			(struct sdw_bus *bus, u64 addr);
-	enum sdw_command_response (*xfer_msg)
-			(struct sdw_bus *bus, struct sdw_msg *msg);
-	enum sdw_command_response (*xfer_msg_defer)
-			(struct sdw_bus *bus);
+	u64 (*override_adr)(struct sdw_bus *bus, u64 addr);
+	enum sdw_command_response (*xfer_msg)(struct sdw_bus *bus, struct sdw_msg *msg);
+	enum sdw_command_response (*xfer_msg_defer)(struct sdw_bus *bus);
 	int (*set_bus_conf)(struct sdw_bus *bus,
-			struct sdw_bus_params *params);
+			    struct sdw_bus_params *params);
 	int (*pre_bank_switch)(struct sdw_bus *bus);
 	int (*post_bank_switch)(struct sdw_bus *bus);
 	u32 (*read_ping_status)(struct sdw_bus *bus);
@@ -849,79 +868,9 @@ struct sdw_master_ops {
 	void (*new_peripheral_assigned)(struct sdw_bus *bus,
 					struct sdw_slave *slave,
 					int dev_num);
-};
-
-/**
- * struct sdw_bus - SoundWire bus
- * @dev: Shortcut to &bus->md->dev to avoid changing the entire code.
- * @md: Master device
- * @bus_lock_key: bus lock key associated to @bus_lock
- * @bus_lock: bus lock
- * @slaves: list of Slaves on this bus
- * @msg_lock_key: message lock key associated to @msg_lock
- * @msg_lock: message lock
- * @m_rt_list: List of Master instance of all stream(s) running on Bus. This
- * is used to compute and program bus bandwidth, clock, frame shape,
- * transport and port parameters
- * @defer_msg: Defer message
- * @params: Current bus parameters
- * @stream_refcount: number of streams currently using this bus
- * @ops: Master callback ops
- * @port_ops: Master port callback ops
- * @prop: Master properties
- * @vendor_specific_prop: pointer to non-standard properties
- * @hw_sync_min_links: Number of links used by a stream above which
- * hardware-based synchronization is required. This value is only
- * meaningful if multi_link is set. If set to 1, hardware-based
- * synchronization will be used even if a stream only uses a single
- * SoundWire segment.
- * @controller_id: system-unique controller ID. If set to -1, the bus @id will be used.
- * @link_id: Link id number, can be 0 to N, unique for each Controller
- * @id: bus system-wide unique id
- * @compute_params: points to Bus resource management implementation
- * @assigned: Bitmap for Slave device numbers.
- * Bit set implies used number, bit clear implies unused number.
- * @clk_stop_timeout: Clock stop timeout computed
- * @bank_switch_timeout: Bank switch timeout computed
- * @domain: IRQ domain
- * @irq_chip: IRQ chip
- * @debugfs: Bus debugfs (optional)
- * @multi_link: Store bus property that indicates if multi links
- * are supported. This flag is populated by drivers after reading
- * appropriate firmware (ACPI/DT).
- * @lane_used_bandwidth: how much bandwidth in bits per second is used by each lane
- */
-struct sdw_bus {
-	struct device *dev;
-	struct sdw_master_device *md;
-	struct lock_class_key bus_lock_key;
-	struct mutex bus_lock;
-	struct list_head slaves;
-	struct lock_class_key msg_lock_key;
-	struct mutex msg_lock;
-	struct list_head m_rt_list;
-	struct sdw_defer defer_msg;
-	struct sdw_bus_params params;
-	int stream_refcount;
-	const struct sdw_master_ops *ops;
-	const struct sdw_master_port_ops *port_ops;
-	struct sdw_master_prop prop;
-	void *vendor_specific_prop;
-	int hw_sync_min_links;
-	int controller_id;
-	unsigned int link_id;
-	int id;
-	int (*compute_params)(struct sdw_bus *bus);
-	DECLARE_BITMAP(assigned, SDW_MAX_DEVICES);
-	unsigned int clk_stop_timeout;
-	u32 bank_switch_timeout;
-	struct irq_chip irq_chip;
-	struct irq_domain *domain;
-#ifdef CONFIG_DEBUG_FS
-	struct dentry *debugfs;
-#endif
-	bool multi_link;
-	unsigned int lane_used_bandwidth[SDW_MAX_LANES];
+	int (*bpt_send_async)(struct sdw_bus *bus, struct sdw_slave *slave,
+			      struct sdw_bpt_msg *msg);
+	int (*bpt_wait)(struct sdw_bus *bus, struct sdw_slave *slave, struct sdw_bpt_msg *msg);
 };
 
 int sdw_bus_master_add(struct sdw_bus *bus, struct device *parent,
@@ -948,7 +897,7 @@ struct sdw_port_config {
  * @ch_count: Channel count of the stream
  * @bps: Number of bits per audio sample
  * @direction: Data direction
- * @type: Stream type PCM or PDM
+ * @type: Stream type PCM, PDM or BPT
  */
 struct sdw_stream_config {
 	unsigned int frame_rate;
@@ -998,7 +947,7 @@ struct sdw_stream_params {
  * @name: SoundWire stream name
  * @params: Stream parameters
  * @state: Current state of the stream
- * @type: Stream type PCM or PDM
+ * @type: Stream type PCM, PDM or BPT
  * @m_rt_count: Count of Master runtime(s) in this stream
  * @master_list: List of Master runtime(s) in this stream.
  * master_list can contain only one m_rt per Master instance
@@ -1013,18 +962,96 @@ struct sdw_stream_runtime {
 	struct list_head master_list;
 };
 
-struct sdw_stream_runtime *sdw_alloc_stream(const char *stream_name);
+/**
+ * struct sdw_bus - SoundWire bus
+ * @dev: Shortcut to &bus->md->dev to avoid changing the entire code.
+ * @md: Master device
+ * @bus_lock_key: bus lock key associated to @bus_lock
+ * @bus_lock: bus lock
+ * @slaves: list of Slaves on this bus
+ * @msg_lock_key: message lock key associated to @msg_lock
+ * @msg_lock: message lock
+ * @m_rt_list: List of Master instance of all stream(s) running on Bus. This
+ * is used to compute and program bus bandwidth, clock, frame shape,
+ * transport and port parameters
+ * @defer_msg: Defer message
+ * @params: Current bus parameters
+ * @stream_refcount: number of streams currently using this bus
+ * @btp_stream_refcount: number of BTP streams currently using this bus (should
+ * be zero or one, multiple streams per link is not supported).
+ * @bpt_stream: pointer stored to handle BTP streams.
+ * @ops: Master callback ops
+ * @port_ops: Master port callback ops
+ * @prop: Master properties
+ * @vendor_specific_prop: pointer to non-standard properties
+ * @hw_sync_min_links: Number of links used by a stream above which
+ * hardware-based synchronization is required. This value is only
+ * meaningful if multi_link is set. If set to 1, hardware-based
+ * synchronization will be used even if a stream only uses a single
+ * SoundWire segment.
+ * @controller_id: system-unique controller ID. If set to -1, the bus @id will be used.
+ * @link_id: Link id number, can be 0 to N, unique for each Controller
+ * @id: bus system-wide unique id
+ * @compute_params: points to Bus resource management implementation
+ * @assigned: Bitmap for Slave device numbers.
+ * Bit set implies used number, bit clear implies unused number.
+ * @clk_stop_timeout: Clock stop timeout computed
+ * @bank_switch_timeout: Bank switch timeout computed
+ * @domain: IRQ domain
+ * @irq_chip: IRQ chip
+ * @debugfs: Bus debugfs (optional)
+ * @multi_link: Store bus property that indicates if multi links
+ * are supported. This flag is populated by drivers after reading
+ * appropriate firmware (ACPI/DT).
+ * @lane_used_bandwidth: how much bandwidth in bits per second is used by each lane
+ */
+struct sdw_bus {
+	struct device *dev;
+	struct sdw_master_device *md;
+	struct lock_class_key bus_lock_key;
+	struct mutex bus_lock;
+	struct list_head slaves;
+	struct lock_class_key msg_lock_key;
+	struct mutex msg_lock;
+	struct list_head m_rt_list;
+	struct sdw_defer defer_msg;
+	struct sdw_bus_params params;
+	int stream_refcount;
+	int bpt_stream_refcount;
+	struct sdw_stream_runtime *bpt_stream;
+	const struct sdw_master_ops *ops;
+	const struct sdw_master_port_ops *port_ops;
+	struct sdw_master_prop prop;
+	void *vendor_specific_prop;
+	int hw_sync_min_links;
+	int controller_id;
+	unsigned int link_id;
+	int id;
+	int (*compute_params)(struct sdw_bus *bus, struct sdw_stream_runtime *stream);
+	DECLARE_BITMAP(assigned, SDW_MAX_DEVICES);
+	unsigned int clk_stop_timeout;
+	u32 bank_switch_timeout;
+	struct irq_chip irq_chip;
+	struct irq_domain *domain;
+#ifdef CONFIG_DEBUG_FS
+	struct dentry *debugfs;
+#endif
+	bool multi_link;
+	unsigned int lane_used_bandwidth[SDW_MAX_LANES];
+};
+
+struct sdw_stream_runtime *sdw_alloc_stream(const char *stream_name, enum sdw_stream_type type);
 void sdw_release_stream(struct sdw_stream_runtime *stream);
 
-int sdw_compute_params(struct sdw_bus *bus);
+int sdw_compute_params(struct sdw_bus *bus, struct sdw_stream_runtime *stream);
 
 int sdw_stream_add_master(struct sdw_bus *bus,
-		struct sdw_stream_config *stream_config,
-		const struct sdw_port_config *port_config,
-		unsigned int num_ports,
-		struct sdw_stream_runtime *stream);
+			  struct sdw_stream_config *stream_config,
+			  const struct sdw_port_config *port_config,
+			  unsigned int num_ports,
+			  struct sdw_stream_runtime *stream);
 int sdw_stream_remove_master(struct sdw_bus *bus,
-		struct sdw_stream_runtime *stream);
+			     struct sdw_stream_runtime *stream);
 int sdw_startup_stream(void *sdw_substream);
 int sdw_prepare_stream(struct sdw_stream_runtime *stream);
 int sdw_enable_stream(struct sdw_stream_runtime *stream);
@@ -1037,6 +1064,11 @@ int sdw_bus_exit_clk_stop(struct sdw_bus *bus);
 
 int sdw_compare_devid(struct sdw_slave *slave, struct sdw_slave_id id);
 void sdw_extract_slave_id(struct sdw_bus *bus, u64 addr, struct sdw_slave_id *id);
+bool is_clock_scaling_supported_by_slave(struct sdw_slave *slave);
+
+int sdw_bpt_send_async(struct sdw_bus *bus, struct sdw_slave *slave, struct sdw_bpt_msg *msg);
+int sdw_bpt_wait(struct sdw_bus *bus, struct sdw_slave *slave, struct sdw_bpt_msg *msg);
+int sdw_bpt_send_sync(struct sdw_bus *bus, struct sdw_slave *slave, struct sdw_bpt_msg *msg);
 
 #if IS_ENABLED(CONFIG_SOUNDWIRE)
 
@@ -1047,6 +1079,8 @@ int sdw_stream_add_slave(struct sdw_slave *slave,
 			 struct sdw_stream_runtime *stream);
 int sdw_stream_remove_slave(struct sdw_slave *slave,
 			    struct sdw_stream_runtime *stream);
+
+int sdw_slave_get_scale_index(struct sdw_slave *slave, u8 *base);
 
 /* messaging and data APIs */
 int sdw_read(struct sdw_slave *slave, u32 addr);
