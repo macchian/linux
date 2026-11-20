@@ -30,6 +30,31 @@ static const struct snd_soc_acpi_endpoint spk_r_endpoint = {
 	.group_id = 1,
 };
 
+/*
+ * Multi-function codecs with three endpoints created for
+ * headset, amp and dmic functions.
+ */
+static const struct snd_soc_acpi_endpoint rt_mf_endpoints[] = {
+	{
+		.num = 0,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{
+		.num = 1,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{
+		.num = 2,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+};
+
 static const struct snd_soc_acpi_endpoint cs42l43_endpoints[] = {
 	{ /* Jack Playback Endpoint */
 		.num = 0,
@@ -99,6 +124,15 @@ static const struct snd_soc_acpi_adr_device rt711_sdca_2_adr[] = {
 		.num_endpoints = 1,
 		.endpoints = &single_endpoint,
 		.name_prefix = "rt711"
+	}
+};
+
+static const struct snd_soc_acpi_adr_device rt721_0_single_adr[] = {
+	{
+		.adr = 0x000030025d072101ull,
+		.num_endpoints = ARRAY_SIZE(rt_mf_endpoints),
+		.endpoints = rt_mf_endpoints,
+		.name_prefix = "rt721"
 	}
 };
 
@@ -373,6 +407,15 @@ static const struct snd_soc_acpi_link_adr rpl_sdw_rt1316_link12_rt714_link0[] = 
 	{}
 };
 
+static const struct snd_soc_acpi_link_adr rpl_rt721_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(rt721_0_single_adr),
+		.adr_d = rt721_0_single_adr,
+	},
+	{},
+};
+
 static const struct snd_soc_acpi_link_adr rpl_sdca_rvp[] = {
 	{
 		.mask = BIT(0),
@@ -562,6 +605,12 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_rpl_sdw_machines[] = {
 		.links = rplp_crb,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-rpl-rt711-l2.tplg",
+	},
+	{
+		.link_mask = BIT(0),
+		.links = rpl_rt721_l0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-rpl-rt721-l0.tplg",
 	},
 	{},
 };
